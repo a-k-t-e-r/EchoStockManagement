@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="StockManagement.Blazor/StockManagement.Blazor.csproj" />
+  <Project Path="StockManagement.Domain/StockManagement.Domain.csproj" />
+  <Project Path="StockManagement.Infrastructure/StockManagement.Infrastructure.csproj" />
+  <Project Path="StockManagement.Reports/StockManagement.Reports.csproj" />
+  <Project Path="StockManagement.Tests/StockManagement.Tests.csproj" Id="9427f574-b3cb-4feb-a3a3-d0f2bef96400" />
+</Solution>

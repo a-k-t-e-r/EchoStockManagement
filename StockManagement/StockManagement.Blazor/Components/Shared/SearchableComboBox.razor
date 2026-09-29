@@ -1,0 +1,112 @@
+﻿@typeparam TItem
+
+<div class="combo-wrap">
+    <input class="form-control"
+           value="@searchText"
+           @onfocus="OpenDropdown"
+           @oninput="OnInput"
+           @onblur="HandleBlur"
+           placeholder="@Placeholder" />
+
+    @if (isOpen)
+    {
+        <div class="combo-dropdown">
+            @if (filtered.Count == 0)
+            {
+                <div class="combo-norecords">
+                    No matches for "@searchText".
+                    <button class="btn btn-sm btn-primary ms-2" type="button"
+                            @onmousedown:preventDefault
+                            @onclick="CreateNew">
+                        + Create New Item
+                    </button>
+                </div>
+            }
+            else
+            {
+                @foreach (var it in filtered)
+                {
+                    <div class="combo-item" @onmousedown:preventDefault @onclick="() => Select(it)">
+                        <b>@CodeSelector(it)</b> — @NameSelector(it)
+                    </div>
+                }
+                <div class="combo-footer">
+                    <button class="btn btn-sm btn-outline-primary" type="button"
+                            @onmousedown:preventDefault
+                            @onclick="CreateNew">
+                        + Create New Item
+                    </button>
+                </div>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public int? Value { get; set; }
+    [Parameter] public EventCallback<int?> ValueChanged { get; set; }
+    [Parameter] public EventCallback<TItem> OnSelected { get; set; }
+    [Parameter] public EventCallback OnRequestCreate { get; set; }
+
+    [Parameter] public Func<TItem, int> IdSelector { get; set; } = _ => 0;
+    [Parameter] public Func<TItem, string> CodeSelector { get; set; } = _ => "";
+    [Parameter] public Func<TItem, string> NameSelector { get; set; } = _ => "";
+    [Parameter] public List<TItem> Source { get; set; } = new();
+    [Parameter] public string Placeholder { get; set; } = "Type to search...";
+
+    private string searchText = "";
+    private bool isOpen;
+    private List<TItem> filtered = new();
+
+    protected override void OnParametersSet()
+    {
+        if (Value.HasValue)
+        {
+            var current = Source.FirstOrDefault(x => IdSelector(x) == Value.Value);
+            if (current is not null) searchText = NameSelector(current);
+        }
+    }
+
+    private void OpenDropdown()
+    {
+        isOpen = true;
+        filtered = Source.Take(20).ToList();
+    }
+
+    private void OnInput(ChangeEventArgs e)
+    {
+        searchText = e.Value?.ToString() ?? "";
+        isOpen = true;
+        var term = searchText.Trim();
+        filtered = string.IsNullOrEmpty(term)
+            ? Source.Take(20).ToList()
+            : Source.Where(x => NameSelector(x).Contains(term, StringComparison.OrdinalIgnoreCase)
+                             || CodeSelector(x).Contains(term, StringComparison.OrdinalIgnoreCase))
+                    .Take(20).ToList();
+    }
+
+    private async Task Select(TItem it)
+    {
+        searchText = NameSelector(it);
+        isOpen = false;
+        Value = IdSelector(it);
+        await ValueChanged.InvokeAsync(Value);
+        await OnSelected.InvokeAsync(it);
+    }
+
+    private async Task CreateNew()
+    {
+        isOpen = false;
+        await OnRequestCreate.InvokeAsync();
+    }
+
+    private void HandleBlur()
+    {
+        // Delay so a click inside the dropdown registers first
+        _ = Task.Delay(200).ContinueWith(_ =>
+        {
+            isOpen = false;
+            _ = InvokeAsync(StateHasChanged);
+        });
+    }
+}

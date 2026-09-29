@@ -1,0 +1,259 @@
+﻿@page "/stock-entry"
+@inject IStockService StockService
+@inject IItemService ItemService
+
+<h1>Stock Entry</h1>
+
+@if (!string.IsNullOrEmpty(message))
+{
+    <div class="alert @(isError ? "alert-danger" : "alert-success")">@message</div>
+}
+
+<div class="card mb-3">
+    <div class="card-body row g-3">
+        <div class="col-md-3">
+            <label class="form-label">Store</label>
+            <select class="form-select" @bind="header.StoreId">
+                <option value="0">-- select --</option>
+                @foreach (var s in stores)
+                {
+                    <option value="@s.StoreId">@s.StoreName</option>
+                }
+            </select>
+        </div>
+        <div class="col-md-2">
+            <label class="form-label">Date</label>
+            <input type="date" class="form-control"
+                   value="@header.TransactionDate.ToString("yyyy-MM-dd")"
+                   @onchange="e => header.TransactionDate = ParseDate(e.Value) ?? DateTime.Today" />
+        </div>
+        <div class="col-md-2">
+            <label class="form-label">Type</label>
+            <select class="form-select" @bind="header.TransactionType">
+                <option value="RECEIPT">RECEIPT</option>
+                <option value="ISSUE">ISSUE</option>
+                <option value="ADJUST">ADJUST</option>
+            </select>
+        </div>
+        <div class="col-md-3">
+            <label class="form-label">Reference</label>
+            <input class="form-control" @bind="header.ReferenceNo" />
+        </div>
+        <div class="col-md-2">
+            <label class="form-label">User</label>
+            <input class="form-control" @bind="header.CreatedBy" />
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header d-flex justify-content-between">
+        <b>Detail Rows</b>
+        <button class="btn btn-sm btn-primary" @onclick="AddRow">+ Add Row</button>
+    </div>
+    <div class="card-body p-0">
+        <table class="table table-sm mb-0 align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th style="width:280px">Item (search)</th>
+                    <th style="width:110px">Qty</th>
+                    <th style="width:110px">Unit Cost</th>
+                    <th style="width:150px">Expiry</th>
+                    <th style="width:90px">Damaged</th>
+                    <th>Remarks</th>
+                    <th style="width:60px"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @for (int i = 0; i < rows.Count; i++)
+                {
+                    var idx = i;
+                    var row = rows[idx];
+                    <tr @key="row">
+                        <td>
+                            <SearchableComboBox TItem="Item"
+                                Value="row.ItemId"
+                                ValueChanged="v => row.ItemId = v"
+                                Source="items"
+                                IdSelector="x => x.ItemId"
+                                CodeSelector="x => x.ItemCode"
+                                NameSelector="x => x.ItemName"
+                                OnSelected="sel => OnItemSelected(row, sel)"
+                                OnRequestCreate="() => OpenCreateDialog(row)" />
+                            @if (attemptedSave && row.ItemId is null)
+                            {
+                                <div class="text-danger small">Item is required.</div>
+                            }
+                            @if (row.RowError is not null)
+                            {
+                                <div class="text-danger small">@row.RowError</div>
+                            }
+                        </td>
+                        <td>
+                            <input type="number" step="0.01" min="0.01" class="form-control"
+                                   value="@row.Quantity"
+                                   @onchange="e => row.Quantity = ParseDec(e.Value)" />
+                            @if (row.Quantity <= 0)
+                            {
+                                <div class="text-danger small">Qty must be &gt; 0.</div>
+                            }
+                        </td>
+                        <td>
+                            <input type="number" step="0.01" min="0" class="form-control"
+                                   value="@row.UnitCost"
+                                   @onchange="e => row.UnitCost = ParseDec(e.Value)" />
+                        </td>
+                        <td>
+                            <input type="date" class="form-control"
+                                   value="@(row.ExpiryDate?.ToString("yyyy-MM-dd"))"
+                                   @onchange="e => row.ExpiryDate = ParseDate(e.Value)" />
+                        </td>
+                        <td class="text-center">
+                            <input type="checkbox" class="form-check-input"
+                                   checked="@row.IsDamaged"
+                                   @onchange="e => row.IsDamaged = (bool)(e.Value ?? false)" />
+                        </td>
+                        <td>
+                            <input class="form-control" value="@row.Remarks"
+                                   @onchange="e => row.Remarks = e.Value?.ToString()" />
+                        </td>
+                        <td>
+                            <button class="btn btn-sm btn-outline-danger"
+                                    @onclick="() => RemoveRow(idx)">×</button>
+                        </td>
+                    </tr>
+                }
+                @if (!rows.Any())
+                {
+                    <tr><td colspan="7" class="text-center text-muted p-3">
+                        No rows yet. Click <b>Add Row</b> to begin.
+                    </td></tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    <div class="card-footer text-end">
+        <button class="btn btn-success" @onclick="Save" disabled="@saving">
+            @(saving ? "Saving..." : "Save Transaction")
+        </button>
+    </div>
+</div>
+
+<RecentTransactions RefreshTrigger="refreshKey" />
+
+<CreateItemDialog Visible="showCreateDialog"
+                  VisibleChanged="v => showCreateDialog = v"
+                  OnCreated="OnItemCreated" />
+
+@code {
+    private StockHeaderDto header = new();
+    private List<StockDetailDto> rows = new();
+    private List<Item> items = new();
+    private List<Store> stores = new();
+
+    private string? message;
+    private bool isError;
+    private bool saving;
+    private bool attemptedSave;
+    private int refreshKey;
+
+    private bool showCreateDialog;
+    private StockDetailDto? rowBeingCreated;
+
+    protected override async Task OnInitializedAsync()
+    {
+        items  = await ItemService.GetAllAsync();
+        stores = await ItemService.GetStoresAsync();
+        header.StoreId = stores.FirstOrDefault()?.StoreId ?? 0;
+        AddRow();
+    }
+
+    private void AddRow() => rows.Add(new StockDetailDto { Quantity = 1 });
+    private void RemoveRow(int idx) => rows.RemoveAt(idx);
+
+    private void OnItemSelected(StockDetailDto row, Item item)
+    {
+        row.ItemId = item.ItemId;
+        row.ItemName = item.ItemName;
+        row.RowError = null;
+    }
+
+    private void OpenCreateDialog(StockDetailDto row)
+    {
+        rowBeingCreated = row;
+        showCreateDialog = true;
+    }
+
+    private void OnItemCreated(Item item)
+    {
+        items.Add(item);
+        if (rowBeingCreated is not null)
+        {
+            rowBeingCreated.ItemId = item.ItemId;
+            rowBeingCreated.ItemName = item.ItemName;
+        }
+        showCreateDialog = false;
+    }
+
+    private async Task Save()
+    {
+        attemptedSave = true;
+        message = null;
+
+        // Client-side validation (fast feedback)
+        var invalid = false;
+        foreach (var r in rows)
+        {
+            r.RowError = null;
+            if (r.ItemId is null) { invalid = true; continue; }
+            if (r.Quantity <= 0) { invalid = true; r.RowError = "Quantity must be > 0."; continue; }
+
+            if (header.TransactionType == "ISSUE")
+            {
+                var avail = await StockService.GetAvailableQtyAsync(header.StoreId, r.ItemId.Value);
+                if (r.Quantity > avail)
+                {
+                    invalid = true;
+                    r.RowError = $"Only {avail} in stock.";
+                }
+            }
+        }
+        if (header.StoreId == 0)
+        {
+            invalid = true;
+            message = "Please choose a store.";
+            isError = true;
+        }
+        if (invalid)
+        {
+            message ??= "Please fix validation errors.";
+            isError = true;
+            return;
+        }
+
+        // Server-side authoritative validation + transaction
+        saving = true;
+        var result = await StockService.SaveBatchAsync(header, rows);
+        saving = false;
+
+        if (result.Success)
+        {
+            isError = false;
+            message = $"Transaction #{result.TransactionId} saved successfully.";
+            rows.Clear();
+            AddRow();
+            attemptedSave = false;
+            refreshKey++;
+        }
+        else
+        {
+            isError = true;
+            message = result.ErrorMessage;
+        }
+    }
+
+    private static decimal ParseDec(object? v)
+        => decimal.TryParse(v?.ToString(), out var d) ? d : 0;
+    private static DateTime? ParseDate(object? v)
+        => DateTime.TryParse(v?.ToString(), out var d) ? d : null;
+}

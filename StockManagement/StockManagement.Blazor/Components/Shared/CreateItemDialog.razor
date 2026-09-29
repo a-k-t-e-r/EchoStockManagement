@@ -1,0 +1,51 @@
+﻿@inject IItemService ItemService
+
+@if (Visible)
+{
+    <div class="modal-backdrop-custom">
+        <div class="modal-card">
+            <h4>Create New Item</h4>
+            <div class="mb-2">
+                <label class="form-label">Item Name</label>
+                <input class="form-control" @bind="itemName" @bind:event="oninput" />
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Unit of Measure</label>
+                <select class="form-select" @bind="uom">
+                    <option value="PCS">PCS</option>
+                    <option value="REAM">REAM</option>
+                    <option value="BOX">BOX</option>
+                    <option value="KG">KG</option>
+                </select>
+            </div>
+            <div class="text-end">
+                <button class="btn btn-secondary me-2" @onclick="Cancel">Cancel</button>
+                <button class="btn btn-primary"
+                        @onclick="Save"
+                        disabled="@string.IsNullOrWhiteSpace(itemName)">
+                    Save
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public EventCallback<bool> VisibleChanged { get; set; }
+    [Parameter] public EventCallback<Item> OnCreated { get; set; }
+
+    private string itemName = "";
+    private string uom = "PCS";
+
+    private async Task Save()
+    {
+        var item = await ItemService.CreateAsync(itemName.Trim(), uom);
+        await OnCreated.InvokeAsync(item);
+        itemName = "";
+        uom = "PCS";
+        await VisibleChanged.InvokeAsync(false);
+    }
+
+    private Task Cancel() => VisibleChanged.InvokeAsync(false);
+}

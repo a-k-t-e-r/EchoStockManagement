@@ -1,0 +1,66 @@
+﻿@page "/stock-ledger"
+@inject IItemService ItemService
+
+<h1>Stock Ledger (RDLC)</h1>
+
+<div class="card mb-3">
+    <div class="card-body row g-3">
+        <div class="col-md-3">
+            <label class="form-label">Store</label>
+            <select class="form-select" @bind="storeId">
+                <option value="0">-- select --</option>
+                @foreach (var s in stores)
+                {
+                    <option value="@s.StoreId">@s.StoreName</option>
+                }
+            </select>
+        </div>
+        <div class="col-md-3">
+            <label class="form-label">From</label>
+            <input type="date" class="form-control"
+                   value="@from.ToString("yyyy-MM-dd")"
+                   @onchange="e => from = DateTime.Parse(e.Value!.ToString()!)" />
+        </div>
+        <div class="col-md-3">
+            <label class="form-label">To</label>
+            <input type="date" class="form-control"
+                   value="@to.ToString("yyyy-MM-dd")"
+                   @onchange="e => to = DateTime.Parse(e.Value!.ToString()!)" />
+        </div>
+        <div class="col-md-3 d-flex align-items-end">
+            <button class="btn btn-primary" @onclick="LoadReport" disabled="@(storeId == 0)">
+                Generate Report
+            </button>
+        </div>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(reportUrl))
+{
+    <iframe src="@reportUrl" style="width:100%; height:800px; border:1px solid #ccc;"></iframe>
+}
+else
+{
+    <div class="alert alert-info">Choose a store and click <b>Generate Report</b>.</div>
+}
+
+@code {
+    private List<Store> stores = new();
+    private int storeId;
+    private DateTime from = DateTime.Today.AddMonths(-1);
+    private DateTime to = DateTime.Today;
+    private string? reportUrl;
+
+    protected override async Task OnInitializedAsync()
+    {
+        stores = await ItemService.GetStoresAsync();
+        storeId = stores.FirstOrDefault()?.StoreId ?? 0;
+    }
+
+    private void LoadReport()
+    {
+        var stamp = DateTime.UtcNow.Ticks; // cache-buster
+        reportUrl = $"/api/reports/stock-ledger?storeId={storeId}" +
+                    $"&from={from:yyyy-MM-dd}&to={to:yyyy-MM-dd}&t={stamp}";
+    }
+}

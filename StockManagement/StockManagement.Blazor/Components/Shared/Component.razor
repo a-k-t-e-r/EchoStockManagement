@@ -1,0 +1,80 @@
+﻿@inject IStockService StockService
+
+<div class="card mt-4">
+    <div class="card-header d-flex justify-content-between">
+        <b>Latest Transactions</b>
+        <button class="btn btn-sm btn-outline-secondary" @onclick="Refresh">Refresh</button>
+    </div>
+    <div class="card-body p-0">
+        <table class="table table-sm table-striped mb-0">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Date</th>
+                    <th>Type</th>
+                    <th>Reference</th>
+                    <th>Store</th>
+                    <th>Lines</th>
+                    <th>User</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var t in Paged)
+                {
+                    <tr>
+                        <td>@t.TransactionId</td>
+                        <td>@t.TransactionDate.ToString("yyyy-MM-dd")</td>
+                        <td>@t.TransactionType</td>
+                        <td>@t.ReferenceNo</td>
+                        <td>@t.StoreName</td>
+                        <td>@t.LineCount</td>
+                        <td>@t.CreatedBy</td>
+                    </tr>
+                }
+                @if (!Paged.Any())
+                {
+                    <tr><td colspan="7" class="text-center text-muted">No transactions yet.</td></tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    <div class="card-footer d-flex justify-content-between align-items-center">
+        <span>Page @currentPage of @TotalPages</span>
+        <div>
+            <button class="btn btn-sm btn-outline-primary me-1"
+                    @onclick="Prev" disabled="@(currentPage == 1)">
+                Prev
+            </button>
+            <button class="btn btn-sm btn-outline-primary"
+                    @onclick="Next" disabled="@(currentPage >= TotalPages)">
+                Next
+            </button>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public int PageSize { get; set; } = 5;
+    [Parameter] public int RefreshTrigger { get; set; } = 0;
+
+    private List<RecentTransactionDto> all = new();
+    private int currentPage = 1;
+
+    private int TotalPages => Math.Max(1, (int)Math.Ceiling(all.Count / (double)PageSize));
+    private IEnumerable<RecentTransactionDto> Paged
+        => all.Skip((currentPage - 1) * PageSize).Take(PageSize);
+
+    protected override async Task OnInitializedAsync() => await Refresh();
+
+    protected override async Task OnParametersSetAsync() => await Refresh();
+
+    private async Task Refresh()
+    {
+        all = await StockService.GetRecentTransactionsAsync(50);
+        if (currentPage > TotalPages) currentPage = 1;
+        StateHasChanged();
+    }
+
+    private void Prev() { if (currentPage > 1) currentPage--; }
+    private void Next() { if (currentPage < TotalPages) currentPage++; }
+}
