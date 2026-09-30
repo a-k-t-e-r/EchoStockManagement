@@ -1,2 +1,1 @@
 # EchoStockManagement
-TechAsses
