@@ -24,7 +24,7 @@ env:
 
   NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
 
-  SOLUTION: 'EchoStockManagement.slnx'
+  SOLUTION: 'StockManagement.slnx'
   TEST_PROJECT: 'StockManagement.Tests/StockManagement.Tests.csproj'
 
 jobs:
