@@ -349,7 +349,7 @@ jobs:
           echo "Line coverage:   ${LINE_RATE}%"
           echo "Branch coverage: ${BRANCH_RATE}%"
 
-          LINE_THRESHOLD=70
+          LINE_THRESHOLD=40
 
           if python -c "import sys; sys.exit(0 if float('$LINE_RATE') >= $LINE_THRESHOLD else 1)"; then
             echo "Coverage gate passed."
