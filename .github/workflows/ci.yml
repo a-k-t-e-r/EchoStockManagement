@@ -6,12 +6,13 @@ on:
   pull_request:
     branches: [ master, develop ]
 
+# Cancel superseded runs on the same branch — saves minutes, faster feedback
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  DOTNET_VERSION: '10.0.x'        # ← CHANGED from 8.0.x (.slnx requires 9.0.200+)
+  DOTNET_VERSION: '8.0.x'
   DOTNET_NOLOGO: 'true'
   DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
@@ -20,7 +21,7 @@ env:
 
 jobs:
   # ============================================================
-  # JOB 1 — Build + Unit + Component tests
+  # JOB 1 — Build + Unit + Component tests (fast fail-fast)
   # ============================================================
   build-and-unit:
     name: Build + Unit + Component Tests
@@ -31,29 +32,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET
+      - name: Setup .NET ${{ env.DOTNET_VERSION }}
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
-
-      - name: Print SDK info
-        run: dotnet --info
-
-      - name: Inspect repository layout
-        shell: pwsh
-        run: |
-          Write-Host "=== Repo root ==="
-          Get-ChildItem -Force | Format-Table Name, Mode
-          Write-Host "=== Solution files ==="
-          Get-ChildItem -Recurse -Include *.sln,*.slnx |
-              Select-Object FullName
 
       - name: Cache NuGet packages
         uses: actions/cache@v4
         with:
           path: ${{ env.NUGET_PACKAGES }}
           key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props') }}
-          restore-keys: nuget-${{ runner.os }}-
+          restore-keys: |
+            nuget-${{ runner.os }}-
 
       - name: Restore
         run: dotnet restore ${{ env.SOLUTION }}
@@ -80,7 +70,7 @@ jobs:
           retention-days: 14
 
   # ============================================================
-  # JOB 2 — Integration tests
+  # JOB 2 — Integration tests (LocalDB on Windows)
   # ============================================================
   integration:
     name: Integration Tests (LocalDB)
@@ -136,7 +126,7 @@ jobs:
           retention-days: 14
 
   # ============================================================
-  # JOB 3 — Coverage gate
+  # JOB 3 — Coverage gate (blocks PR if coverage drops below 70%)
   # ============================================================
   coverage:
     name: Coverage Gate
@@ -158,50 +148,32 @@ jobs:
         with:
           path: coverage-input
 
-      - name: Inspect downloaded artifacts
-        shell: pwsh
-        run: |
-          Write-Host "=== coverage-input tree ==="
-          if (Test-Path coverage-input) {
-              Get-ChildItem -Recurse coverage-input |
-                  Select-Object FullName, Length |
-                  Format-Table -AutoSize
-          } else {
-              Write-Host "coverage-input not found!"
-              exit 1
-          }
-
       - name: Install ReportGenerator
         run: dotnet tool install --global dotnet-reportgenerator-globaltool
 
       - name: Merge coverage reports
         shell: pwsh
         run: |
-          $coverageFiles = Get-ChildItem -Recurse -Filter "coverage.cobertura.xml" -Path coverage-input |
-                           Select-Object -ExpandProperty FullName
-
-          if ($coverageFiles.Count -eq 0) {
-              Write-Error "No coverage.cobertura.xml found. Did the test jobs run coverlet.collector?"
-              exit 1
-          }
-
-          Write-Host "Found $($coverageFiles.Count) coverage file(s):"
-          $coverageFiles | ForEach-Object { Write-Host "  $_" }
-
-          $reportsArg = ($coverageFiles -join ";")
-          reportgenerator "-reports:$reportsArg" "-targetdir:coverage-report" "-reporttypes:Cobertura;HtmlInline;TextSummary"
+          reportgenerator `
+            -reports:"coverage-input/**/coverage.cobertura.xml" `
+            -targetdir:"coverage-report" `
+            -reporttypes:"Cobertura;HtmlInline;TextSummary"
 
       - name: Enforce coverage threshold
         shell: pwsh
         run: |
           $xml = [xml](Get-Content "coverage-report/Cobertura.xml")
           $lineRate = [double]$xml.coverage.'line-rate' * 100
-          Write-Host ("Line coverage: {0:N2}%" -f $lineRate)
+          $branchRate = [double]$xml.coverage.'branch-rate' * 100
+          Write-Host "Line coverage:   $([math]::Round($lineRate,2))%"
+          Write-Host "Branch coverage: $([math]::Round($branchRate,2))%"
 
-          if ($lineRate -lt 70) {
-            Write-Error ("Line coverage {0:N2}% is below 70%." -f $lineRate)
+          $lineThreshold = 70
+          if ($lineRate -lt $lineThreshold) {
+            Write-Error "Line coverage $lineRate% is below the $lineThreshold% threshold."
             exit 1
           }
+          Write-Host "Coverage gate passed."
 
       - name: Upload coverage report
         if: always()
@@ -212,7 +184,7 @@ jobs:
           retention-days: 30
 
   # ============================================================
-  # JOB 4 — Publish test report
+  # JOB 4 — Publish test report as PR check
   # ============================================================
   report:
     name: Publish Test Report
@@ -240,7 +212,7 @@ jobs:
           fail-on-error: true
 
   # ============================================================
-  # JOB 5 — Final gate
+  # JOB 5 — Single gate for branch protection
   # ============================================================
   ci-success:
     name: CI Success
