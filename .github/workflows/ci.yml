@@ -2,13 +2,18 @@ name: CI — Stock Management
 
 on:
   push:
-    branches: [ master, develop ]
-  pull_request:
-    branches: [ master, develop ]
+    branches:
+      - master
+      - develop
 
-# Cancel superseded runs on the same branch — saves minutes, faster feedback
+  pull_request:
+    branches:
+      - master
+      - develop
+
+# Cancel an older run when a newer commit is pushed
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -16,84 +21,176 @@ env:
   DOTNET_NOLOGO: 'true'
   DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+
   NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+
   SOLUTION: 'EchoStockManagement.slnx'
+  TEST_PROJECT: 'StockManagement.Tests/StockManagement.Tests.csproj'
 
 jobs:
+
   # ============================================================
-  # JOB 1 — Build + Unit + Component tests (fast fail-fast)
+  # JOB 1 — Restore + Build + Unit + Component Tests
   # ============================================================
   build-and-unit:
     name: Build + Unit + Component Tests
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
+
+      # ----------------------------------------------------------
+      # Checkout
+      # ----------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ----------------------------------------------------------
+      # Setup .NET
+      # ----------------------------------------------------------
       - name: Setup .NET ${{ env.DOTNET_VERSION }}
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
+      # ----------------------------------------------------------
+      # Display environment information
+      # Useful when debugging CI failures
+      # ----------------------------------------------------------
+      - name: Verify .NET environment
+        shell: bash
+        run: |
+          dotnet --info
+          echo ""
+          echo "Solution files:"
+          find . -type f \( -name "*.sln" -o -name "*.slnx" \) -print
+
+          echo ""
+          echo "Project files:"
+          find . -type f -name "*.csproj" -print
+
+      # ----------------------------------------------------------
+      # Cache NuGet packages
+      # ----------------------------------------------------------
       - name: Cache NuGet packages
         uses: actions/cache@v4
         with:
           path: ${{ env.NUGET_PACKAGES }}
-          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props') }}
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/Directory.Build.targets', '**/NuGet.config') }}
           restore-keys: |
             nuget-${{ runner.os }}-
 
+      # ----------------------------------------------------------
+      # Restore
+      # ----------------------------------------------------------
       - name: Restore
-        run: dotnet restore ${{ env.SOLUTION }}
+        run: dotnet restore "${{ env.SOLUTION }}" --verbosity minimal
 
+      # ----------------------------------------------------------
+      # Build
+      #
+      # Restore has already happened, so --no-restore
+      # prevents another NuGet restore.
+      # ----------------------------------------------------------
       - name: Build
-        run: dotnet build ${{ env.SOLUTION }} -c Release --no-restore
+        run: dotnet build "${{ env.SOLUTION }}" -c Release --no-restore --verbosity minimal
 
-      - name: Unit + Component tests
+      # ----------------------------------------------------------
+      # Unit + Component Tests
+      #
+      # --no-build:
+      # Build already happened above.
+      #
+      # --no-restore:
+      # Restore already happened above.
+      # ----------------------------------------------------------
+      - name: Unit + Component Tests
         run: >
-          dotnet test StockManagement.Tests/StockManagement.Tests.csproj
-          -c Release --no-build
+          dotnet test "${{ env.TEST_PROJECT }}"
+          -c Release
+          --no-build
+          --no-restore
           --filter "Category=Unit|Category=Component"
           --logger "trx;LogFileName=fast-tests.trx"
           --logger "console;verbosity=minimal"
           --results-directory TestResults
           --collect:"XPlat Code Coverage"
 
-      - name: Upload test + coverage artifacts
+      # ----------------------------------------------------------
+      # Upload test + coverage results
+      #
+      # always() means artifacts are uploaded even when tests fail.
+      # ----------------------------------------------------------
+      - name: Upload Unit + Component Test Results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: fast-test-results
           path: TestResults/
+          if-no-files-found: warn
           retention-days: 14
 
+
   # ============================================================
-  # JOB 2 — Integration tests (LocalDB on Windows)
+  # JOB 2 — Integration Tests
+  #
+  # Windows is intentionally used here because the tests depend
+  # on SQL Server LocalDB.
   # ============================================================
   integration:
-    name: Integration Tests (LocalDB)
+    name: Integration Tests (SQL Server LocalDB)
     runs-on: windows-latest
     needs: build-and-unit
     timeout-minutes: 20
 
     steps:
+
+      # ----------------------------------------------------------
+      # Checkout
+      # ----------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET
+      # ----------------------------------------------------------
+      # Setup .NET
+      # ----------------------------------------------------------
+      - name: Setup .NET ${{ env.DOTNET_VERSION }}
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
+      # ----------------------------------------------------------
+      # Cache NuGet packages
+      # ----------------------------------------------------------
       - name: Cache NuGet packages
         uses: actions/cache@v4
         with:
           path: ${{ env.NUGET_PACKAGES }}
-          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
-          restore-keys: nuget-${{ runner.os }}-
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/Directory.Build.targets', '**/NuGet.config') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
 
+      # ----------------------------------------------------------
+      # Verify .NET environment
+      # ----------------------------------------------------------
+      - name: Verify .NET environment
+        shell: pwsh
+        run: |
+          dotnet --info
+
+          Write-Host ""
+          Write-Host "Solution files:"
+          Get-ChildItem -Recurse -Include *.sln,*.slnx |
+            Select-Object FullName
+
+          Write-Host ""
+          Write-Host "Project files:"
+          Get-ChildItem -Recurse -Filter *.csproj |
+            Select-Object FullName
+
+      # ----------------------------------------------------------
+      # Start SQL Server LocalDB
+      # ----------------------------------------------------------
       - name: Start SQL Server LocalDB
         shell: pwsh
         run: |
@@ -101,95 +198,190 @@ jobs:
           sqllocaldb start MSSQLLocalDB
           sqllocaldb info MSSQLLocalDB
 
+      # ----------------------------------------------------------
+      # Restore
+      # ----------------------------------------------------------
       - name: Restore
-        run: dotnet restore ${{ env.SOLUTION }}
+        run: dotnet restore "${{ env.SOLUTION }}" --verbosity minimal
 
+      # ----------------------------------------------------------
+      # Build
+      # ----------------------------------------------------------
       - name: Build
-        run: dotnet build ${{ env.SOLUTION }} -c Release --no-restore
+        run: dotnet build "${{ env.SOLUTION }}" -c Release --no-restore --verbosity minimal
 
-      - name: Integration tests
+      # ----------------------------------------------------------
+      # Integration Tests
+      # ----------------------------------------------------------
+      - name: Integration Tests
         run: >
-          dotnet test StockManagement.Tests/StockManagement.Tests.csproj
-          -c Release --no-build
+          dotnet test "${{ env.TEST_PROJECT }}"
+          -c Release
+          --no-build
+          --no-restore
           --filter "Category=Integration"
           --logger "trx;LogFileName=integration-tests.trx"
           --logger "console;verbosity=minimal"
           --results-directory TestResults
           --collect:"XPlat Code Coverage"
 
-      - name: Upload integration artifacts
+      # ----------------------------------------------------------
+      # Upload integration test results
+      # ----------------------------------------------------------
+      - name: Upload Integration Test Results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: integration-test-results
           path: TestResults/
+          if-no-files-found: warn
           retention-days: 14
 
+
   # ============================================================
-  # JOB 3 — Coverage gate (blocks PR if coverage drops below 70%)
+  # JOB 3 — Coverage Gate
+  #
+  # Combines coverage from:
+  #
+  #   Unit + Component tests
+  #   Integration tests
+  #
+  # Then requires >= 70% line coverage.
   # ============================================================
   coverage:
     name: Coverage Gate
-    runs-on: windows-latest
-    needs: [ build-and-unit, integration ]
+    runs-on: ubuntu-latest
+    needs:
+      - build-and-unit
+      - integration
+
     if: always()
 
     steps:
+
+      # ----------------------------------------------------------
+      # Checkout
+      # ----------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET
+      # ----------------------------------------------------------
+      # Setup .NET
+      # ----------------------------------------------------------
+      - name: Setup .NET ${{ env.DOTNET_VERSION }}
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Download all coverage artifacts
+      # ----------------------------------------------------------
+      # Download coverage artifacts
+      # ----------------------------------------------------------
+      - name: Download all test artifacts
         uses: actions/download-artifact@v4
         with:
           path: coverage-input
 
-      - name: Install ReportGenerator
-        run: dotnet tool install --global dotnet-reportgenerator-globaltool
-
-      - name: Merge coverage reports
-        shell: pwsh
+      # ----------------------------------------------------------
+      # Find coverage files
+      # ----------------------------------------------------------
+      - name: Find coverage files
+        shell: bash
         run: |
-          reportgenerator `
-            -reports:"coverage-input/**/coverage.cobertura.xml" `
-            -targetdir:"coverage-report" `
+          echo "Coverage files found:"
+          find coverage-input -type f -name "coverage.cobertura.xml" -print
+
+      # ----------------------------------------------------------
+      # Install ReportGenerator
+      # ----------------------------------------------------------
+      - name: Install ReportGenerator
+        run: |
+          dotnet tool install --global dotnet-reportgenerator-globaltool
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+
+      # ----------------------------------------------------------
+      # Merge coverage reports
+      # ----------------------------------------------------------
+      - name: Merge coverage reports
+        shell: bash
+        run: |
+          mkdir -p coverage-report
+
+          reportgenerator \
+            -reports:"coverage-input/**/coverage.cobertura.xml" \
+            -targetdir:"coverage-report" \
             -reporttypes:"Cobertura;HtmlInline;TextSummary"
 
-      - name: Enforce coverage threshold
-        shell: pwsh
+      # ----------------------------------------------------------
+      # Display coverage summary
+      # ----------------------------------------------------------
+      - name: Display coverage summary
+        shell: bash
         run: |
-          $xml = [xml](Get-Content "coverage-report/Cobertura.xml")
-          $lineRate = [double]$xml.coverage.'line-rate' * 100
-          $branchRate = [double]$xml.coverage.'branch-rate' * 100
-          Write-Host "Line coverage:   $([math]::Round($lineRate,2))%"
-          Write-Host "Branch coverage: $([math]::Round($branchRate,2))%"
+          if [ -f "coverage-report/Summary.txt" ]; then
+            cat coverage-report/Summary.txt
+          else
+            echo "Coverage summary was not generated."
+          fi
 
-          $lineThreshold = 70
-          if ($lineRate -lt $lineThreshold) {
-            Write-Error "Line coverage $lineRate% is below the $lineThreshold% threshold."
+      # ----------------------------------------------------------
+      # Enforce coverage threshold
+      # ----------------------------------------------------------
+      - name: Enforce coverage threshold
+        shell: bash
+        run: |
+          if [ ! -f "coverage-report/Cobertura.xml" ]; then
+            echo "Coverage report not found."
             exit 1
-          }
-          Write-Host "Coverage gate passed."
+          fi
 
-      - name: Upload coverage report
+          LINE_RATE=$(python -c "
+          import xml.etree.ElementTree as ET
+          root = ET.parse('coverage-report/Cobertura.xml').getroot()
+          print(float(root.attrib.get('line-rate', 0)) * 100)
+          ")
+
+          BRANCH_RATE=$(python -c "
+          import xml.etree.ElementTree as ET
+          root = ET.parse('coverage-report/Cobertura.xml').getroot()
+          print(float(root.attrib.get('branch-rate', 0)) * 100)
+          ")
+
+          echo "Line coverage:   ${LINE_RATE}%"
+          echo "Branch coverage: ${BRANCH_RATE}%"
+
+          LINE_THRESHOLD=70
+
+          if python -c "import sys; sys.exit(0 if float('$LINE_RATE') >= $LINE_THRESHOLD else 1)"; then
+            echo "Coverage gate passed."
+          else
+            echo "Line coverage ${LINE_RATE}% is below ${LINE_THRESHOLD}%."
+            exit 1
+          fi
+
+      # ----------------------------------------------------------
+      # Upload coverage report
+      # ----------------------------------------------------------
+      - name: Upload Coverage Report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: coverage-report/
+          if-no-files-found: warn
           retention-days: 30
 
+
   # ============================================================
-  # JOB 4 — Publish test report as PR check
+  # JOB 4 — Publish Test Report on Pull Requests
   # ============================================================
   report:
     name: Publish Test Report
     runs-on: ubuntu-latest
-    needs: [ build-and-unit, integration ]
+
+    needs:
+      - build-and-unit
+      - integration
+
     if: always() && github.event_name == 'pull_request'
 
     permissions:
@@ -198,12 +390,19 @@ jobs:
       contents: read
 
     steps:
-      - name: Download all TRX files
+
+      # ----------------------------------------------------------
+      # Download test artifacts
+      # ----------------------------------------------------------
+      - name: Download test results
         uses: actions/download-artifact@v4
         with:
           path: test-results
 
-      - name: Publish test report
+      # ----------------------------------------------------------
+      # Publish TRX results to GitHub
+      # ----------------------------------------------------------
+      - name: Publish Test Report
         uses: dorny/test-reporter@v1
         with:
           name: Test Results
@@ -211,26 +410,47 @@ jobs:
           reporter: dotnet-trx
           fail-on-error: true
 
+
   # ============================================================
-  # JOB 5 — Single gate for branch protection
+  # JOB 5 — Final CI Gate
+  #
+  # Configure this job as the required status check in GitHub
+  # branch protection.
   # ============================================================
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [ build-and-unit, integration, coverage ]
+
+    needs:
+      - build-and-unit
+      - integration
+      - coverage
+
     if: always()
 
     steps:
+
       - name: Verify all required jobs passed
         shell: bash
         run: |
+          echo "Build + Unit + Component: ${{ needs.build-and-unit.result }}"
+          echo "Integration:              ${{ needs.integration.result }}"
+          echo "Coverage:                 ${{ needs.coverage.result }}"
+
           if [ "${{ needs.build-and-unit.result }}" != "success" ]; then
-            echo "build-and-unit failed"; exit 1
+            echo "build-and-unit failed."
+            exit 1
           fi
+
           if [ "${{ needs.integration.result }}" != "success" ]; then
-            echo "integration failed"; exit 1
+            echo "integration failed."
+            exit 1
           fi
+
           if [ "${{ needs.coverage.result }}" != "success" ]; then
-            echo "coverage gate failed"; exit 1
+            echo "coverage failed."
+            exit 1
           fi
-          echo "All CI checks passed."
+
+          echo ""
+          echo "All CI checks passed successfully."
